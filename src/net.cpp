@@ -47,26 +47,40 @@ static bool beginRequest(HTTPClient &http, const String &path) {
   return true;
 }
 
-bool netFetchNames(PrinterStatus *slots) {
+enum class NamesResult { HttpFailed, NoPrinters, Applied };
+
+// One attempt at the list route. `wrapped` picks the filter shape: an
+// ArduinoJson filter has to match the payload's structure, so an array-shaped
+// filter matches nothing against {"printers": [...]} and the two shapes cannot
+// share one filter. Boot-only, so retrying beats guessing.
+static NamesResult fetchNamesOnce(PrinterStatus *slots, const char *path, bool wrapped) {
   HTTPClient http;
-  if (!beginRequest(http, "/api/v1/printers")) return false;
+  if (!beginRequest(http, path)) return NamesResult::HttpFailed;
 
   const int code = http.GET();
   if (code != 200) {
     http.end();
-    return false;
+    return NamesResult::HttpFailed;
   }
 
-  // Called once at boot and the payload is small, so no stream filter here.
-  JsonDocument doc;
-  const DeserializationError err = deserializeJson(doc, http.getStream());
-  http.end();
-  if (err) return false;
+  // Filtered, and not for heap reasons alone: the list carries each printer's
+  // LAN access_code, plus serial_number and ip_address. Keeping only id and
+  // name means the access codes never land in device RAM at all.
+  JsonDocument filter;
+  JsonObject entry = wrapped ? filter["printers"].to<JsonArray>().add<JsonObject>()
+                             : filter.to<JsonArray>().add<JsonObject>();
+  entry["id"] = true;
+  entry["name"] = true;
 
-  // Accept either a bare array or {"printers": [...]}.
-  JsonArrayConst arr = doc.is<JsonArray>() ? doc.as<JsonArrayConst>()
-                                           : doc["printers"].as<JsonArrayConst>();
-  if (arr.isNull()) return false;
+  JsonDocument doc;
+  const DeserializationError err =
+      deserializeJson(doc, http.getStream(), DeserializationOption::Filter(filter));
+  http.end();
+  if (err) return NamesResult::HttpFailed;
+
+  JsonArrayConst arr =
+      wrapped ? doc["printers"].as<JsonArrayConst>() : doc.as<JsonArrayConst>();
+  if (arr.isNull() || arr.size() == 0) return NamesResult::NoPrinters;
 
   for (JsonObjectConst p : arr) {
     const int id = p["id"] | -1;
@@ -76,7 +90,26 @@ bool netFetchNames(PrinterStatus *slots) {
       if (slots[i].id == id) copyTrunc(slots[i].name, sizeof(slots[i].name), name);
     }
   }
-  return true;
+  return NamesResult::Applied;
+}
+
+bool netFetchNames(PrinterStatus *slots) {
+  // The trailing slash is not cosmetic: on a real instance GET /api/v1/printers
+  // 404s while GET /api/v1/printers/ returns 200. Try the slash first and keep
+  // the bare form as a fallback -- a 404 here leaves namesLoaded false, and
+  // status polling is gated on that, so the whole box goes dead.
+  static const char *const PATHS[] = {"/api/v1/printers/", "/api/v1/printers"};
+
+  for (uint8_t p = 0; p < 2; p++) {
+    for (uint8_t w = 0; w < 2; w++) {
+      const NamesResult r = fetchNamesOnce(slots, PATHS[p], w == 1);
+      if (r == NamesResult::Applied) return true;
+      // Route answered, both shapes parsed, no printers in it: Bambuddy is
+      // reachable and there is nothing left to hydrate.
+      if (r == NamesResult::NoPrinters && w == 1) return true;
+    }
+  }
+  return false;
 }
 
 bool netFetchStatus(PrinterStatus &slot) {

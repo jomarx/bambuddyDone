@@ -46,7 +46,7 @@ PCF8574 P0..P7   -> button -> GND
 2. **Settings -> API Keys**: create a key scoped to `printers:read` and `printers:clear_plate`
    only. It lives in ESP8266 flash and is recoverable by anyone holding the board, so keep its
    blast radius to "read printer state and acknowledge plates".
-3. Note each printer's numeric `id` from `GET /api/v1/printers`.
+3. Note each printer's numeric `id` from `GET /api/v1/printers/`.
 
 ## Configure
 
@@ -61,9 +61,15 @@ Fill in WiFi, the Bambuddy host/port, and the API key. Then map buttons to print
 static const int BUTTON_PRINTER_IDS[8] = {1, 2, 3, 4, 5, -1, -1, -1};
 ```
 
-Printer *names* are not configured. The box calls `GET /api/v1/printers` at boot and hydrates a
+Printer *names* are not configured. The box calls `GET /api/v1/printers/` at boot and hydrates a
 label per id, so renaming a printer in Bambuddy follows through on the next reboot. A configured id
 that Bambuddy doesn't know renders as `?`.
+
+The trailing slash matters: a real instance 404s on `GET /api/v1/printers` and answers
+`/api/v1/printers/`. The box tries the slash first and falls back, so either route shape works. The
+response is parsed through an ArduinoJson filter that keeps only `id` and `name` -- the list also
+carries every printer's LAN `access_code`, serial number and IP, and none of that should sit in a
+device anyone can walk off with.
 
 ## Build and flash
 
