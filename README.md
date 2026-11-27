@@ -120,6 +120,14 @@ about 40 req/min, against Bambuddy's documented 100/min read budget.
 Writes are bounded on both ends: a 5s per-printer cooldown, and a token bucket of 8 POSTs/min
 against the documented 10/min control limit. A 429 flips the status line to `rate limited`.
 
+The write path is verified against a live Bambuddy (printer on `FINISH` with
+`awaiting_plate_clear=true`, an empty-bodied POST with `Content-Length: 0`, a 2xx reply, and the
+queued job starting while `awaiting_plate_clear` went false). The reply body was not captured, so
+the parse deliberately does not require one: only an explicit `{"success": false}` counts as a
+refusal and any other 2xx reads as cleared. A false *failure* is the expensive direction here --
+the plate is cleared and the operator walks away thinking it isn't -- whereas a false success is
+corrected by the next status poll 1.5s later.
+
 ### Known limitations
 
 - A second button pressed *during* an in-flight HTTP call can be dropped. The OLED shows `BUSY` on
